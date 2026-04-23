@@ -116,6 +116,10 @@ export async function runScan(
 ): Promise<ScanResult[]> {
   emit(scanId, { phase: "LISTING", message: "Connecting to Gmail IMAP..." });
 
+  const isFullScan = scanMode === "full";
+  // Full scan fetches everything; other modes respect the user's maxMessages cap
+  const effectiveMax = isFullScan ? Number.MAX_SAFE_INTEGER : maxMessages;
+
   const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
 
   let inboxCriteria: Record<string, unknown>;
@@ -131,8 +135,8 @@ export async function runScan(
 
   emit(scanId, { phase: "LISTING", message: "Scanning inbox..." });
 
-  const inboxMax = scanMode === "full" ? maxMessages : Math.floor(maxMessages * 0.9);
-  const spamMax = scanMode === "recent" ? 0 : Math.min(500, maxMessages - inboxMax);
+  const inboxMax = effectiveMax;
+  const spamMax = scanMode === "recent" ? 0 : isFullScan ? Number.MAX_SAFE_INTEGER : Math.min(500, effectiveMax - Math.floor(effectiveMax * 0.9));
 
   const inboxMessages = await fetchMailboxMessages(
     email, appPassword, "INBOX", inboxCriteria, inboxMax, "INBOX"
@@ -144,7 +148,10 @@ export async function runScan(
       )
     : [];
 
-  const allMessages = [...inboxMessages, ...spamMessages].slice(0, maxMessages);
+  // Full scan: no cap — take everything fetched
+  const allMessages = isFullScan
+    ? [...inboxMessages, ...spamMessages]
+    : [...inboxMessages, ...spamMessages].slice(0, effectiveMax);
 
   emit(scanId, {
     phase: "LISTING",

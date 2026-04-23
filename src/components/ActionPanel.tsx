@@ -4,7 +4,7 @@ import { useState } from "react";
 import { Button } from "./ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "./ui/dialog";
 import { Checkbox } from "./ui/checkbox";
-import { Loader2, Trash2, Mail, AlertTriangle } from "lucide-react";
+import { Loader2, Trash2, Mail, AlertTriangle, CheckCircle2 } from "lucide-react";
 import { toast } from "sonner";
 import { useRouter } from "next/navigation";
 
@@ -17,6 +17,12 @@ interface ActionPanelProps {
   };
 }
 
+interface ActionResults {
+  trashed?: number;
+  unsubscribed?: number;
+  deleted?: number;
+}
+
 export function ActionPanel({ scanId, scan }: ActionPanelProps) {
   const [showTrashDialog, setShowTrashDialog] = useState(false);
   const [showUnsubDialog, setShowUnsubDialog] = useState(false);
@@ -24,6 +30,7 @@ export function ActionPanel({ scanId, scan }: ActionPanelProps) {
   const [confirmed, setConfirmed] = useState(false);
   const [loading, setLoading] = useState<string | null>(null);
   const [countdown, setCountdown] = useState(5);
+  const [results, setResults] = useState<ActionResults>({});
   const router = useRouter();
 
   async function doTrash() {
@@ -36,6 +43,7 @@ export function ActionPanel({ scanId, scan }: ActionPanelProps) {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error);
+      setResults((prev) => ({ ...prev, trashed: (prev.trashed ?? 0) + (data.success as number) }));
       toast.success(`Moved ${data.success} emails to Trash`);
       setShowTrashDialog(false);
       router.refresh();
@@ -59,6 +67,7 @@ export function ActionPanel({ scanId, scan }: ActionPanelProps) {
       const success = (data.outcomes as { result: string }[]).filter(
         (o) => o.result === "SUCCESS"
       ).length;
+      setResults((prev) => ({ ...prev, unsubscribed: (prev.unsubscribed ?? 0) + success }));
       toast.success(`Unsubscribed from ${success} senders and trashed their emails`);
       setShowUnsubDialog(false);
       router.refresh();
@@ -83,6 +92,7 @@ export function ActionPanel({ scanId, scan }: ActionPanelProps) {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error);
+      setResults((prev) => ({ ...prev, deleted: (prev.deleted ?? 0) + (data.success as number) }));
       toast.success(`Permanently deleted ${data.success} emails`);
       setShowDeleteDialog(false);
       router.refresh();
@@ -106,7 +116,35 @@ export function ActionPanel({ scanId, scan }: ActionPanelProps) {
     }, 1000);
   }
 
+  const totalActioned = (results.trashed ?? 0) + (results.unsubscribed ?? 0) + (results.deleted ?? 0);
+
   return (
+    <div className="space-y-3">
+      {totalActioned > 0 && (
+        <div className="flex items-center gap-3 p-4 rounded-xl bg-emerald-50 border border-emerald-200">
+          <CheckCircle2 className="w-5 h-5 text-emerald-600 shrink-0" />
+          <div className="flex flex-wrap gap-x-4 gap-y-1">
+            {results.trashed !== undefined && (
+              <span className="text-sm font-medium text-emerald-800">
+                <span className="text-emerald-600 font-bold">{results.trashed}</span> moved to Trash
+              </span>
+            )}
+            {results.unsubscribed !== undefined && (
+              <span className="text-sm font-medium text-emerald-800">
+                <span className="text-emerald-600 font-bold">{results.unsubscribed}</span> unsubscribed
+              </span>
+            )}
+            {results.deleted !== undefined && (
+              <span className="text-sm font-medium text-emerald-800">
+                <span className="text-emerald-600 font-bold">{results.deleted}</span> permanently deleted
+              </span>
+            )}
+          </div>
+          <span className="ml-auto text-xs text-emerald-600 font-semibold">
+            {totalActioned} total cleaned
+          </span>
+        </div>
+      )}
     <div className="flex flex-wrap gap-3 p-4 rounded-lg border bg-card">
       <div className="flex-1 min-w-0">
         <p className="text-sm font-medium">Execute cleanup actions</p>
@@ -229,6 +267,7 @@ export function ActionPanel({ scanId, scan }: ActionPanelProps) {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+    </div>
     </div>
   );
 }
