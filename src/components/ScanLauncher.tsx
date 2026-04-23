@@ -22,7 +22,7 @@ const SCAN_MODES = [
     value: "full",
     icon: Layers,
     label: "Full Scan",
-    description: "Everything — inbox + spam. Up to 5000 emails.",
+    description: "Everything — inbox + spam. No limit, scans your entire Gmail.",
   },
 ];
 

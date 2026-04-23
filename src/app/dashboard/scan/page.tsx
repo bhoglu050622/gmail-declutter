@@ -10,8 +10,8 @@ import type { ScanProgressEvent } from "../../../types/scan";
 const PHASE_LABELS: Record<string, string> = {
   INIT: "Initializing...",
   LISTING: "Listing messages...",
-  FETCHING: "Fetching email metadata...",
-  CLASSIFYING_RULES: "Applying classification rules...",
+  FETCHING: "Fetching email headers...",
+  CLASSIFYING_RULES: "Classifying emails...",
   CLASSIFYING_AI: "AI classifying remaining emails...",
   COMPLETE: "Scan complete!",
   ERROR: "Scan failed",
@@ -68,7 +68,7 @@ export default function ScanPage() {
       <div>
         <h1 className="text-2xl font-bold">Scanning Inbox</h1>
         <p className="text-muted-foreground text-sm">
-          This may take a minute depending on inbox size
+          Large inboxes (10k+ emails) can take several minutes — keep this tab open
         </p>
       </div>
 

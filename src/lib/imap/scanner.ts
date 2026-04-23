@@ -27,6 +27,12 @@ const HEADER_NAMES = [
   "x-spam-status",
 ];
 
+// Larger batch = fewer IMAP round trips. 200 is safe for Gmail without triggering limits.
+const FETCH_BATCH = 200;
+
+// Emit progress every N emails during classification
+const CLASSIFY_EMIT_EVERY = 500;
+
 function parseHeaderBuffer(buf: Buffer): Record<string, string> {
   const text = buf.toString("utf8");
   const unfolded = text.replace(/\r?\n[ \t]+/g, " ");
@@ -54,16 +60,24 @@ function parseFrom(raw: string): { display: string; email: string } {
   return { display: clean, email: clean };
 }
 
+type FetchedMessage = {
+  messageId: string;
+  headers: Record<string, string>;
+  envelope: Record<string, unknown>;
+  labels: Set<string>;
+};
+
 async function fetchMailboxMessages(
   email: string,
   password: string,
   mailbox: string,
   searchCriteria: Record<string, unknown>,
   maxMessages: number,
-  mailboxPrefix: string
-): Promise<{ messageId: string; headers: Record<string, string>; envelope: Record<string, unknown>; labels: Set<string> }[]> {
+  mailboxPrefix: string,
+  onProgress?: (fetched: number, total: number, label: string) => void
+): Promise<FetchedMessage[]> {
   const client = createImapClient(email, password);
-  const results: { messageId: string; headers: Record<string, string>; envelope: Record<string, unknown>; labels: Set<string> }[] = [];
+  const results: FetchedMessage[] = [];
 
   await client.connect();
   let lock;
@@ -76,12 +90,17 @@ async function fetchMailboxMessages(
 
   try {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const uids = await (client as any).search(searchCriteria, { uid: true }) as number[];
-    const limited: number[] = uids.slice(-maxMessages);
+    const allUids = await (client as any).search(searchCriteria, { uid: true }) as number[];
+    // Take the most recent N (highest UIDs are newest)
+    const uids: number[] = maxMessages >= Number.MAX_SAFE_INTEGER
+      ? allUids
+      : allUids.slice(-maxMessages);
 
-    const BATCH = 50;
-    for (let i = 0; i < limited.length; i += BATCH) {
-      const chunk = limited.slice(i, i + BATCH);
+    const label = mailboxPrefix === "INBOX" ? "inbox" : "spam";
+    onProgress?.(0, uids.length, label);
+
+    for (let i = 0; i < uids.length; i += FETCH_BATCH) {
+      const chunk = uids.slice(i, i + FETCH_BATCH);
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       for await (const msg of (client as any).fetch(chunk, {
         uid: true,
@@ -98,6 +117,7 @@ async function fetchMailboxMessages(
           labels: (msg.labels as Set<string>) ?? new Set<string>(),
         });
       }
+      onProgress?.(Math.min(i + FETCH_BATCH, uids.length), uids.length, label);
     }
   } finally {
     lock.release();
@@ -117,7 +137,6 @@ export async function runScan(
   emit(scanId, { phase: "LISTING", message: "Connecting to Gmail IMAP..." });
 
   const isFullScan = scanMode === "full";
-  // Full scan fetches everything; other modes respect the user's maxMessages cap
   const effectiveMax = isFullScan ? Number.MAX_SAFE_INTEGER : maxMessages;
 
   const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
@@ -133,38 +152,59 @@ export async function runScan(
     inboxCriteria = { all: true };
   }
 
-  emit(scanId, { phase: "LISTING", message: "Scanning inbox..." });
+  const spamMax = scanMode === "recent" ? 0
+    : isFullScan ? Number.MAX_SAFE_INTEGER
+    : Math.min(500, Math.floor(effectiveMax * 0.1));
 
-  const inboxMax = effectiveMax;
-  const spamMax = scanMode === "recent" ? 0 : isFullScan ? Number.MAX_SAFE_INTEGER : Math.min(500, effectiveMax - Math.floor(effectiveMax * 0.9));
+  // Track total across both mailboxes for unified progress
+  let inboxTotal = 0;
+  let spamTotal = 0;
+  let fetchedCount = 0;
+
+  emit(scanId, { phase: "LISTING", message: "Listing inbox messages..." });
 
   const inboxMessages = await fetchMailboxMessages(
-    email, appPassword, "INBOX", inboxCriteria, inboxMax, "INBOX"
+    email, appPassword, "INBOX", inboxCriteria, effectiveMax, "INBOX",
+    (fetched, total, label) => {
+      if (label === "inbox") inboxTotal = total;
+      fetchedCount = fetched;
+      const grandTotal = inboxTotal + spamTotal;
+      emit(scanId, {
+        phase: "FETCHING",
+        processed: fetchedCount,
+        total: grandTotal || total,
+        message: `Fetching inbox: ${fetched.toLocaleString()} / ${total.toLocaleString()} emails`,
+      });
+    }
   );
+
+  fetchedCount = inboxMessages.length;
 
   const spamMessages = spamMax > 0
     ? await fetchMailboxMessages(
-        email, appPassword, "[Gmail]/Spam", spamCriteria, spamMax, "[Gmail]/Spam"
+        email, appPassword, "[Gmail]/Spam", spamCriteria, spamMax, "[Gmail]/Spam",
+        (fetched, total, label) => {
+          if (label === "spam") spamTotal = total;
+          const grandTotal = inboxTotal + total;
+          emit(scanId, {
+            phase: "FETCHING",
+            processed: inboxMessages.length + fetched,
+            total: grandTotal,
+            message: `Fetching spam: ${fetched.toLocaleString()} / ${total.toLocaleString()} emails`,
+          });
+        }
       )
     : [];
 
-  // Full scan: no cap — take everything fetched
   const allMessages = isFullScan
     ? [...inboxMessages, ...spamMessages]
     : [...inboxMessages, ...spamMessages].slice(0, effectiveMax);
 
   emit(scanId, {
-    phase: "LISTING",
-    processed: allMessages.length,
-    total: allMessages.length,
-    message: `Found ${allMessages.length} messages`,
-  });
-
-  emit(scanId, {
     phase: "CLASSIFYING_RULES",
     processed: 0,
     total: allMessages.length,
-    message: "Classifying emails...",
+    message: `Found ${allMessages.length.toLocaleString()} emails — classifying...`,
   });
 
   const results: ScanResult[] = [];
@@ -217,12 +257,12 @@ export async function runScan(
       metadata,
     });
 
-    if (i % 100 === 0 && i > 0) {
+    if (i % CLASSIFY_EMIT_EVERY === 0 && i > 0) {
       emit(scanId, {
         phase: "CLASSIFYING_RULES",
         processed: i,
         total: allMessages.length,
-        message: `Classified ${i}/${allMessages.length} emails`,
+        message: `Classifying: ${i.toLocaleString()} / ${allMessages.length.toLocaleString()} emails`,
       });
     }
   }
@@ -238,7 +278,7 @@ export async function runScan(
     phase: "COMPLETE",
     processed: results.length,
     total: results.length,
-    message: "Scan complete",
+    message: `Done — ${results.length.toLocaleString()} emails scanned`,
     counts,
   });
 
