@@ -250,7 +250,7 @@ export async function runScan(
 
     results.push({
       messageId: msg.messageId,
-      category: confident ? category : "REVIEW",
+      category,
       reason,
       confidence: confident ? 1.0 : 0.5,
       classifiedBy: "RULES",
