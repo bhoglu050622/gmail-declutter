@@ -24,7 +24,8 @@ export async function POST() {
     let deleted = 0;
 
     try {
-      const uids = await client.search({ all: true }, { uid: true });
+      const searchResult = await client.search({ all: true }, { uid: true });
+      const uids: number[] = Array.isArray(searchResult) ? searchResult : [];
 
       if (uids.length === 0) {
         return NextResponse.json({ deleted: 0, folder: trashFolder });
